@@ -197,16 +197,16 @@ class function<R(TArgs...)> {
   return is_match(input.substr(1), pattern.substr(1));
 }
 
-[[nodiscard]] inline auto split(std::string_view input, std::string_view delim)
-    -> std::vector<std::string_view> {
-  std::vector<std::string_view> output;
+template <class T = std::string_view, class TDelim>
+[[nodiscard]] inline auto split(T input, TDelim delim) -> std::vector<T> {
+  std::vector<T> output{};
   std::size_t first{};
   while (first < std::size(input)) {
     const auto second = input.find_first_of(delim, first);
     if (first != second) {
       output.emplace_back(input.substr(first, second - first));
     }
-    if (second == std::string_view::npos) {
+    if (second == T::npos) {
       break;
     }
     first = second + 1;
@@ -332,9 +332,39 @@ template <class T, class TValue>
 }  // namespace math
 
 namespace type_traits {
+template <class...>
+struct list {};
+
 template <class T, class...>
 struct identity {
   using type = T;
+};
+
+template <class T>
+struct function_traits : function_traits<decltype(&T::operator())> {};
+
+template <class R, class... TArgs>
+struct function_traits<R (*)(TArgs...)> {
+  using result_type = R;
+  using args = list<TArgs...>;
+};
+
+template <class R, class... TArgs>
+struct function_traits<R(TArgs...)> {
+  using result_type = R;
+  using args = list<TArgs...>;
+};
+
+template <class R, class T, class... TArgs>
+struct function_traits<R (T::*)(TArgs...)> {
+  using result_type = R;
+  using args = list<TArgs...>;
+};
+
+template <class R, class T, class... TArgs>
+struct function_traits<R (T::*)(TArgs...) const> {
+  using result_type = R;
+  using args = list<TArgs...>;
 };
 
 template <class T>
@@ -2247,6 +2277,106 @@ template <class T>
 }
 
 namespace bdd {
+class steps {
+ public:
+  template <class TSteps>
+  constexpr /*explicit(false)*/ steps(const TSteps& steps) : steps_{steps} {}
+
+  template <class TGherkin>
+  auto operator|(const TGherkin& gherkin) {
+    gherkin_ = utility::split<std::string>(gherkin, '\n');
+    return [this] {
+      while (line_ < std::size(gherkin_) - 1) {
+        steps_(*this);
+      }
+    };
+  }
+
+  auto& feature(std::string_view step) {
+    step_ = step;
+    name_ = "Feature";
+    boost::ut::log << gherkin_[line_];
+    return *this;
+  }
+
+  auto& scenario(std::string_view step) {
+    step_ = step;
+    name_ = "Scenario";
+    ++line_;
+    boost::ut::log << gherkin_[line_];
+    return *this;
+  }
+
+  auto& given(std::string_view step) {
+    step_ = step;
+    name_ = "Given";
+    ++line_;
+    boost::ut::log << gherkin_[line_];
+    return *this;
+  }
+
+  auto& when(std::string_view step) {
+    step_ = step;
+    name_ = "When";
+    ++line_;
+    boost::ut::log << gherkin_[line_];
+    return *this;
+  }
+
+  auto& then(std::string_view step) {
+    step_ = step;
+    name_ = "Then";
+    ++line_;
+    boost::ut::log << gherkin_[line_];
+    return *this;
+  }
+
+  template <class TStep>
+  auto operator=(const TStep& step) {
+    return call(typename type_traits::function_traits<TStep>::args{}, step);
+  }
+
+ private:
+  template <class T>
+  static auto make(const std::string& arg) -> T {
+    return T{std::stoi(arg)};
+  }
+
+  template <class... TArgs, class TStep>
+  auto call(type_traits::list<TArgs...>, const TStep& step) const {
+    auto arg = [n = 0](auto step_it, auto gherkin_it) mutable -> std::string {
+      decltype(gherkin_it) end{};
+      decltype(n) i{};
+
+      for (;; ++step_it, ++gherkin_it) {
+        if (*step_it == '{') {
+          if (i == n) {
+            end = ++gherkin_it;
+            while (*end++ != ' ')
+              ;
+            return {gherkin_it, end};
+          } else {
+            while (*gherkin_it++ != ' ')
+              ;
+          }
+        }
+      }
+
+      return {};
+    };
+
+    auto step_it = std::begin(step_);
+    auto gherkin_it = std::begin(gherkin_[line_]);
+    std::advance(gherkin_it, gherkin_[line_].find(name_) + std::size(name_));
+    return step(make<TArgs>(arg(step_it, gherkin_it))...);
+  }
+
+  void (*steps_)(steps&){};
+  std::vector<std::string> gherkin_{};
+  std::size_t line_{};
+  std::string step_{};
+  std::string name_{};
+};
 [[maybe_unused]] constexpr auto given = [](const auto name) {
   return detail::test{"given", name};
 };
